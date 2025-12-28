@@ -108,7 +108,7 @@ jobs:
 
       - name: Rules Review with Claude
         id: review
-        uses: anthropics/claude-code-base-action@v1
+        uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           allowed_tools: "View,GlobTool,Grep,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(find:*)"
