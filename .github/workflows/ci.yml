@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  merge_group:
+
+jobs:
+  Lint:
+    name: Lint
+    uses: constellos/.github/.github/workflows/reusable-lint.yml@main
+
+  Typecheck:
+    name: Typecheck
+    uses: constellos/.github/.github/workflows/reusable-typecheck.yml@main
+
+  Unit-Tests-Pass:
+    name: Unit Tests Pass
+    uses: constellos/.github/.github/workflows/reusable-unit-tests.yml@main
