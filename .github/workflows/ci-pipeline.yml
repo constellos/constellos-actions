@@ -22,8 +22,26 @@ jobs:
   lint:
     name: "Static Analysis / Lint (ESLint)"
     runs-on: ubuntu-latest
+    outputs:
+      has_app: ${{ steps.detect.outputs.has_app }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Detect app
+        id: detect
+        run: |
+          HAS_APP=false
+          [ -f "next.config.js" ] && HAS_APP=true
+          [ -f "next.config.mjs" ] && HAS_APP=true
+          [ -f "next.config.ts" ] && HAS_APP=true
+          [ -f "vite.config.ts" ] && HAS_APP=true
+          [ -f "vite.config.js" ] && HAS_APP=true
+          [ -f "playwright.config.ts" ] && HAS_APP=true
+          ls apps/*/package.json >/dev/null 2>&1 && HAS_APP=true
+          [ -d "src/app" ] && HAS_APP=true
+          echo "has_app=$HAS_APP" >> $GITHUB_OUTPUT
+          echo "Detected has_app=$HAS_APP"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -64,8 +82,8 @@ jobs:
 
   e2e:
     name: "Tests / E2E (Playwright)"
-    needs: [unit]
-    if: false  # Set to true for repos with apps
+    needs: [lint, unit]
+    if: needs.lint.outputs.has_app == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,8 +108,8 @@ jobs:
   # ============================================
   requirements:
     name: "Reviews / Requirements"
-    needs: [unit]
-    if: github.event_name == 'pull_request'
+    needs: [unit, e2e]
+    if: github.event_name == 'pull_request' && !failure() && !cancelled()
     runs-on: ubuntu-latest
     outputs:
       passed: ${{ steps.extract.outputs.passed }}
@@ -274,8 +292,8 @@ jobs:
 
   ui:
     name: "Reviews / UI"
-    needs: [requirements, e2e]
-    if: false  # Set to true for repos with apps
+    needs: [lint, requirements, e2e]
+    if: github.event_name == 'pull_request' && needs.lint.outputs.has_app == 'true' && needs.requirements.outputs.passed == 'true'
     runs-on: ubuntu-latest
     outputs:
       passed: ${{ steps.extract.outputs.passed }}
