@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: ['**']
   pull_request:
     branches: ['**']
 
@@ -14,6 +12,9 @@ permissions:
 concurrency:
   group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
 
 jobs:
   # ============================================
@@ -27,9 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect app
+      - name: Detect environment
         id: detect
         run: |
+          # Detect package manager
+          PM="npm"
+          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "pnpm-lock.yaml" ] && PM="pnpm"
+          [ -f "yarn.lock" ] && PM="yarn"
+          echo "pm=$PM" >> $GITHUB_OUTPUT
+
+          # Detect app
           HAS_APP=false
           [ -f "next.config.js" ] && HAS_APP=true
           [ -f "next.config.mjs" ] && HAS_APP=true
@@ -40,24 +49,65 @@ jobs:
           ls apps/*/package.json >/dev/null 2>&1 && HAS_APP=true
           [ -d "src/app" ] && HAS_APP=true
           echo "has_app=$HAS_APP" >> $GITHUB_OUTPUT
-          echo "Detected has_app=$HAS_APP"
 
       - uses: actions/setup-node@v4
+        if: steps.detect.outputs.pm != 'bun'
         with:
-          node-version: '22'
-      - run: npm ci
-      - run: npm run lint
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.detect.outputs.pm == 'bun'
+
+      - name: Install dependencies
+        run: |
+          case "${{ steps.detect.outputs.pm }}" in
+            bun) bun install --frozen-lockfile ;;
+            pnpm) corepack enable && pnpm install --frozen-lockfile ;;
+            yarn) yarn --frozen-lockfile ;;
+            *) npm ci ;;
+          esac
+
+      - name: Lint
+        run: |
+          PM="${{ steps.detect.outputs.pm }}"
+          $PM run lint
 
   types:
     name: "Static Analysis / Types (TypeScript)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Detect package manager
+        id: detect
+        run: |
+          PM="npm"
+          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "pnpm-lock.yaml" ] && PM="pnpm"
+          [ -f "yarn.lock" ] && PM="yarn"
+          echo "pm=$PM" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-node@v4
+        if: steps.detect.outputs.pm != 'bun'
         with:
-          node-version: '22'
-      - run: npm ci
-      - run: npm run typecheck || npx tsc --noEmit
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.detect.outputs.pm == 'bun'
+
+      - name: Install dependencies
+        run: |
+          case "${{ steps.detect.outputs.pm }}" in
+            bun) bun install --frozen-lockfile ;;
+            pnpm) corepack enable && pnpm install --frozen-lockfile ;;
+            yarn) yarn --frozen-lockfile ;;
+            *) npm ci ;;
+          esac
+
+      - name: Typecheck
+        run: |
+          PM="${{ steps.detect.outputs.pm }}"
+          $PM run typecheck || npx tsc --noEmit
 
   # ============================================
   # TESTS (requires Static Analysis)
@@ -68,14 +118,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Detect package manager
+        id: detect
+        run: |
+          PM="npm"
+          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "pnpm-lock.yaml" ] && PM="pnpm"
+          [ -f "yarn.lock" ] && PM="yarn"
+          echo "pm=$PM" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-node@v4
+        if: steps.detect.outputs.pm != 'bun'
         with:
-          node-version: '22'
-      - run: npm ci
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.detect.outputs.pm == 'bun'
+
+      - name: Install dependencies
+        run: |
+          case "${{ steps.detect.outputs.pm }}" in
+            bun) bun install --frozen-lockfile ;;
+            pnpm) corepack enable && pnpm install --frozen-lockfile ;;
+            yarn) yarn --frozen-lockfile ;;
+            *) npm ci ;;
+          esac
+
       - name: Run unit tests
         run: |
+          PM="${{ steps.detect.outputs.pm }}"
           if [ -f "vitest.config.ts" ] || [ -f "vitest.config.js" ]; then
-            npm run test || npx vitest run
+            $PM run test || npx vitest run
           else
             echo "No vitest config found, skipping"
           fi
@@ -87,15 +161,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Detect package manager
+        id: detect
+        run: |
+          PM="npm"
+          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "pnpm-lock.yaml" ] && PM="pnpm"
+          [ -f "yarn.lock" ] && PM="yarn"
+          echo "pm=$PM" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-node@v4
+        if: steps.detect.outputs.pm != 'bun'
         with:
-          node-version: '22'
-      - run: npm ci
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.detect.outputs.pm == 'bun'
+
+      - name: Install dependencies
+        run: |
+          case "${{ steps.detect.outputs.pm }}" in
+            bun) bun install --frozen-lockfile ;;
+            pnpm) corepack enable && pnpm install --frozen-lockfile ;;
+            yarn) yarn --frozen-lockfile ;;
+            *) npm ci ;;
+          esac
+
       - run: npx playwright install chromium --with-deps
+
       - name: Run E2E tests
         run: |
           mkdir -p .claude/screenshots
           npx playwright test --project=chromium --screenshot=on
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -172,6 +271,49 @@ jobs:
           echo "passed=true" >> $GITHUB_OUTPUT
           echo 'result={"passed":true,"summary":"Review completed"}' >> $GITHUB_OUTPUT
 
+      - name: Update review comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MARKER="<!-- ci-review-${{ github.sha }} -->"
+          PR="${{ github.event.pull_request.number }}"
+          REVIEW="Requirements"
+          PASSED="${{ steps.extract.outputs.passed }}"
+          RESULT='${{ steps.extract.outputs.result }}'
+
+          STATUS="✓"
+          [ "$PASSED" != "true" ] && STATUS="✗"
+          SUMMARY=$(echo "$RESULT" | jq -r '.summary // "N/A"' 2>/dev/null || echo "N/A")
+
+          ROW="| $REVIEW | $STATUS | $SUMMARY |"
+
+          # Check for existing comment
+          EXISTING=$(gh api "/repos/${{ github.repository }}/issues/$PR/comments" \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | {id: .id, body: .body}" | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            COMMENT_ID=$(echo "$EXISTING" | jq -r '.id')
+            OLD_BODY=$(echo "$EXISTING" | jq -r '.body')
+            # Append new row
+            NEW_BODY=$(echo "$OLD_BODY" | sed "/^| $REVIEW |/d")
+            NEW_BODY="$NEW_BODY
+          $ROW"
+            gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -f body="$NEW_BODY"
+          else
+            # Create new comment
+            COMMENT="$MARKER
+          ## Reviews
+
+          | Review | Status | Summary |
+          |--------|--------|---------|
+          $ROW
+
+          ---
+          *Claude Code CI*"
+            gh pr comment "$PR" --body "$COMMENT"
+          fi
+
   code-quality:
     name: "Reviews / Code Quality"
     needs: [requirements]
@@ -218,6 +360,48 @@ jobs:
           fi
           echo "passed=true" >> $GITHUB_OUTPUT
           echo 'result={"passed":true,"summary":"Review completed"}' >> $GITHUB_OUTPUT
+
+      - name: Update review comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MARKER="<!-- ci-review-${{ github.sha }} -->"
+          PR="${{ github.event.pull_request.number }}"
+          REVIEW="Code Quality"
+          PASSED="${{ steps.extract.outputs.passed }}"
+          RESULT='${{ steps.extract.outputs.result }}'
+
+          STATUS="✓"
+          [ "$PASSED" != "true" ] && STATUS="✗"
+          SUMMARY=$(echo "$RESULT" | jq -r '.summary // "N/A"' 2>/dev/null || echo "N/A")
+
+          ROW="| $REVIEW | $STATUS | $SUMMARY |"
+
+          # Check for existing comment
+          EXISTING=$(gh api "/repos/${{ github.repository }}/issues/$PR/comments" \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | {id: .id, body: .body}" | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            COMMENT_ID=$(echo "$EXISTING" | jq -r '.id')
+            OLD_BODY=$(echo "$EXISTING" | jq -r '.body')
+            # Append new row before the footer
+            NEW_BODY=$(echo "$OLD_BODY" | sed "/---/i\\
+          $ROW")
+            gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -f body="$NEW_BODY"
+          else
+            # Create new comment (shouldn't happen as requirements runs first)
+            COMMENT="$MARKER
+          ## Reviews
+
+          | Review | Status | Summary |
+          |--------|--------|---------|
+          $ROW
+
+          ---
+          *Claude Code CI*"
+            gh pr comment "$PR" --body "$COMMENT"
+          fi
 
   context:
     name: "Reviews / Context"
@@ -290,6 +474,48 @@ jobs:
           echo "passed=true" >> $GITHUB_OUTPUT
           echo 'result={"passed":true,"summary":"Review completed"}' >> $GITHUB_OUTPUT
 
+      - name: Update review comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MARKER="<!-- ci-review-${{ github.sha }} -->"
+          PR="${{ github.event.pull_request.number }}"
+          REVIEW="Context"
+          PASSED="${{ steps.extract.outputs.passed }}"
+          RESULT='${{ steps.extract.outputs.result }}'
+
+          STATUS="✓"
+          [ "$PASSED" != "true" ] && STATUS="✗"
+          SUMMARY=$(echo "$RESULT" | jq -r '.summary // "N/A"' 2>/dev/null || echo "N/A")
+
+          ROW="| $REVIEW | $STATUS | $SUMMARY |"
+
+          # Check for existing comment
+          EXISTING=$(gh api "/repos/${{ github.repository }}/issues/$PR/comments" \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | {id: .id, body: .body}" | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            COMMENT_ID=$(echo "$EXISTING" | jq -r '.id')
+            OLD_BODY=$(echo "$EXISTING" | jq -r '.body')
+            # Append new row before the footer
+            NEW_BODY=$(echo "$OLD_BODY" | sed "/---/i\\
+          $ROW")
+            gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -f body="$NEW_BODY"
+          else
+            # Create new comment (shouldn't happen as requirements runs first)
+            COMMENT="$MARKER
+          ## Reviews
+
+          | Review | Status | Summary |
+          |--------|--------|---------|
+          $ROW
+
+          ---
+          *Claude Code CI*"
+            gh pr comment "$PR" --body "$COMMENT"
+          fi
+
   ui:
     name: "Reviews / UI"
     needs: [lint, requirements, e2e]
@@ -351,58 +577,44 @@ jobs:
           echo "passed=true" >> $GITHUB_OUTPUT
           echo 'result={"passed":true,"summary":"Review completed"}' >> $GITHUB_OUTPUT
 
-  # ============================================
-  # POST REVIEW COMMENT
-  # ============================================
-  review-comment:
-    name: "Reviews / Summary"
-    needs: [requirements, code-quality, context]
-    if: always() && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Post comment
+      - name: Update review comment
+        if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MARKER="<!-- reviews-comment -->"
+          MARKER="<!-- ci-review-${{ github.sha }} -->"
+          PR="${{ github.event.pull_request.number }}"
+          REVIEW="UI"
+          PASSED="${{ steps.extract.outputs.passed }}"
+          RESULT='${{ steps.extract.outputs.result }}'
 
-          get_status() {
-            local passed="$1"
-            local result="$2"
-            if [ "$passed" = "true" ]; then echo "✓"; else echo "✗"; fi
-          }
+          STATUS="✓"
+          [ "$PASSED" != "true" ] && STATUS="✗"
+          SUMMARY=$(echo "$RESULT" | jq -r '.summary // "N/A"' 2>/dev/null || echo "N/A")
 
-          REQ_P="${{ needs.requirements.outputs.passed }}"
-          CQ_P="${{ needs.code-quality.outputs.passed }}"
-          CTX_P="${{ needs.context.outputs.passed }}"
+          ROW="| $REVIEW | $STATUS | $SUMMARY |"
 
-          REQ_R='${{ needs.requirements.outputs.result }}'
-          CQ_R='${{ needs.code-quality.outputs.result }}'
-          CTX_R='${{ needs.context.outputs.result }}'
+          # Check for existing comment
+          EXISTING=$(gh api "/repos/${{ github.repository }}/issues/$PR/comments" \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | {id: .id, body: .body}" | head -1)
 
-          REQ_S=$(echo "$REQ_R" | jq -r '.summary // "N/A"' 2>/dev/null || echo "N/A")
-          CQ_S=$(echo "$CQ_R" | jq -r '.summary // "N/A"' 2>/dev/null || echo "N/A")
-          CTX_S=$(echo "$CTX_R" | jq -r '.summary // "N/A"' 2>/dev/null || echo "N/A")
-
-          COMMENT="$MARKER
+          if [ -n "$EXISTING" ]; then
+            COMMENT_ID=$(echo "$EXISTING" | jq -r '.id')
+            OLD_BODY=$(echo "$EXISTING" | jq -r '.body')
+            # Append new row before the footer
+            NEW_BODY=$(echo "$OLD_BODY" | sed "/---/i\\
+          $ROW")
+            gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -f body="$NEW_BODY"
+          else
+            # Create new comment (shouldn't happen as requirements runs first)
+            COMMENT="$MARKER
           ## Reviews
 
           | Review | Status | Summary |
           |--------|--------|---------|
-          | Requirements | $(get_status "$REQ_P") | $REQ_S |
-          | Code Quality | $(get_status "$CQ_P") | $CQ_S |
-          | Context | $(get_status "$CTX_P") | $CTX_S |
+          $ROW
 
           ---
           *Claude Code CI*"
-
-          PR="${{ github.event.pull_request.number }}"
-
-          EXISTING=$(gh api "/repos/${{ github.repository }}/issues/$PR/comments" \
-            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -1)
-
-          if [ -n "$EXISTING" ]; then
-            gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/$EXISTING" -f body="$COMMENT"
-          else
             gh pr comment "$PR" --body "$COMMENT"
           fi
