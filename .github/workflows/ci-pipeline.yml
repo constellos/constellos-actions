@@ -33,7 +33,7 @@ jobs:
         run: |
           # Detect package manager
           PM="npm"
-          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "bun.lockb" ] || [ -f "bun.lock" ] && PM="bun"
           [ -f "pnpm-lock.yaml" ] && PM="pnpm"
           [ -f "yarn.lock" ] && PM="yarn"
           echo "pm=$PM" >> $GITHUB_OUTPUT
@@ -82,7 +82,7 @@ jobs:
         id: detect
         run: |
           PM="npm"
-          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "bun.lockb" ] || [ -f "bun.lock" ] && PM="bun"
           [ -f "pnpm-lock.yaml" ] && PM="pnpm"
           [ -f "yarn.lock" ] && PM="yarn"
           echo "pm=$PM" >> $GITHUB_OUTPUT
@@ -123,7 +123,7 @@ jobs:
         id: detect
         run: |
           PM="npm"
-          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "bun.lockb" ] || [ -f "bun.lock" ] && PM="bun"
           [ -f "pnpm-lock.yaml" ] && PM="pnpm"
           [ -f "yarn.lock" ] && PM="yarn"
           echo "pm=$PM" >> $GITHUB_OUTPUT
@@ -166,7 +166,7 @@ jobs:
         id: detect
         run: |
           PM="npm"
-          [ -f "bun.lockb" ] && PM="bun"
+          [ -f "bun.lockb" ] || [ -f "bun.lock" ] && PM="bun"
           [ -f "pnpm-lock.yaml" ] && PM="pnpm"
           [ -f "yarn.lock" ] && PM="yarn"
           echo "pm=$PM" >> $GITHUB_OUTPUT
