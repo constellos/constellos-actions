@@ -1,0 +1,355 @@
+name: Context Review
+description: Reviews against project context files (rules, memory, agents, skills)
+
+inputs:
+  github_token:
+    description: 'GitHub token for API access'
+    required: true
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: true
+
+outputs:
+  passed:
+    description: 'Whether all sub-reviews passed'
+    value: ${{ steps.aggregate.outputs.passed }}
+  result_json:
+    description: 'Aggregated JSON result'
+    value: ${{ steps.aggregate.outputs.result_json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect context file changes
+      id: detect
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        # Get changed files
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path' > /tmp/changed_files.txt
+        else
+          git diff --name-only HEAD~1 HEAD > /tmp/changed_files.txt 2>/dev/null || echo "" > /tmp/changed_files.txt
+        fi
+
+        CHANGED=$(cat /tmp/changed_files.txt)
+
+        # Check which categories have relevant files changed OR always run for code changes
+        HAS_RULES=$(find .claude/rules -name "*.md" 2>/dev/null | head -1 | grep -q . && echo 'true' || echo 'false')
+        HAS_MEMORY=$([ -f "CLAUDE.md" ] || find . -name "CLAUDE.md" 2>/dev/null | head -1 | grep -q . && echo 'true' || echo 'false')
+        HAS_AGENTS=$(echo "$CHANGED" | grep -qE '(agents/.*\.md|AGENT\.md|\.claude/agents/)' && echo 'true' || echo 'false')
+        HAS_SKILLS=$(echo "$CHANGED" | grep -qE '(skills/.*\.md|SKILL\.md|\.claude/skills/)' && echo 'true' || echo 'false')
+
+        echo "has_rules=$HAS_RULES" >> $GITHUB_OUTPUT
+        echo "has_memory=$HAS_MEMORY" >> $GITHUB_OUTPUT
+        echo "has_agents=$HAS_AGENTS" >> $GITHUB_OUTPUT
+        echo "has_skills=$HAS_SKILLS" >> $GITHUB_OUTPUT
+
+        # Get issue context
+        BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+        ISSUE_NUMBER=""
+        if [[ $BRANCH_NAME =~ ^(feature|fix|bugfix|hotfix)/([0-9]+) ]]; then
+          ISSUE_NUMBER="${BASH_REMATCH[2]}"
+        elif [[ $BRANCH_NAME =~ ^([0-9]+)- ]]; then
+          ISSUE_NUMBER="${BASH_REMATCH[1]}"
+        fi
+
+        if [ -n "$ISSUE_NUMBER" ]; then
+          gh issue view $ISSUE_NUMBER --json title,body,comments > /tmp/issue.json 2>/dev/null || echo "{}" > /tmp/issue.json
+        else
+          echo "{}" > /tmp/issue.json
+        fi
+
+    # ============== RULES SUB-REVIEW ==============
+    - name: Rules Review
+      if: steps.detect.outputs.has_rules == 'true'
+      id: rules_review
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_tools: "View,GlobTool,Grep,Bash(git diff:*),Bash(cat:*),Bash(find:*)"
+        max_turns: 15
+        prompt: |
+          # Rules Compliance Review
+
+          Review code changes against project rules in .claude/rules/*.md files.
+
+          ## Your Task
+          1. Read /tmp/changed_files.txt to see what files changed
+          2. Find all rules files: find .claude/rules -name "*.md"
+          3. For each rule file:
+             - Read the frontmatter for path patterns (globs)
+             - Match changed files against those patterns
+             - Check if changes comply with the rule
+          4. Report violations and suggestions
+
+          ## Output Format
+          ```json
+          {
+            "passed": true/false,
+            "confidence": 0.0-1.0,
+            "rule_evaluations": [
+              {
+                "rule_file": "path",
+                "matched_files": ["files"],
+                "compliant": true/false,
+                "violations": ["violations"],
+                "suggestions": ["suggestions"]
+              }
+            ],
+            "summary": "Brief summary"
+          }
+          ```
+
+    - name: Extract rules result
+      if: steps.detect.outputs.has_rules == 'true'
+      id: rules_extract
+      shell: bash
+      run: |
+        EXEC_FILE="${{ steps.rules_review.outputs.execution_file }}"
+        DEFAULT='{"passed":true,"status":"passed","summary":"Rules review completed"}'
+
+        if [ -f "$EXEC_FILE" ]; then
+          LAST_TEXT=$(jq -r '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last // ""' "$EXEC_FILE" 2>/dev/null)
+          OUTPUT=$(echo "$LAST_TEXT" | sed -n '/```json/,/```/{/```json/d;/```/d;p;}' | tr -d '\r')
+          if echo "$OUTPUT" | jq . >/dev/null 2>&1 && [ -n "$OUTPUT" ]; then
+            PASSED=$(echo "$OUTPUT" | jq -r '.passed // true')
+            OUTPUT=$(echo "$OUTPUT" | jq --arg s "$([ "$PASSED" = "true" ] && echo "passed" || echo "failed")" '. + {status: $s}')
+            echo "$OUTPUT" > /tmp/rules_result.json
+          else
+            echo "$DEFAULT" > /tmp/rules_result.json
+          fi
+        else
+          echo "$DEFAULT" > /tmp/rules_result.json
+        fi
+
+    # ============== MEMORY SUB-REVIEW ==============
+    - name: Project Memory Review
+      if: steps.detect.outputs.has_memory == 'true'
+      id: memory_review
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_tools: "View,GlobTool,Grep,Bash(git diff:*),Bash(cat:*),Bash(find:*)"
+        max_turns: 15
+        prompt: |
+          # Project Memory Review
+
+          Review code changes against CLAUDE.md project memory files.
+
+          ## Your Task
+          1. Find all CLAUDE.md files: find . -name "CLAUDE.md"
+          2. Read the root CLAUDE.md and any folder-specific ones
+          3. Extract rules and guidelines from these files
+          4. Check if changed files (/tmp/changed_files.txt) comply
+          5. Look for patterns, conventions, and requirements documented
+
+          ## Output Format
+          ```json
+          {
+            "passed": true/false,
+            "confidence": 0.0-1.0,
+            "claude_file_evaluations": [
+              {
+                "file": "path/to/CLAUDE.md",
+                "rules_extracted": ["rules found"],
+                "violations": ["violations"],
+                "suggestions": ["suggestions"]
+              }
+            ],
+            "summary": "Brief summary"
+          }
+          ```
+
+    - name: Extract memory result
+      if: steps.detect.outputs.has_memory == 'true'
+      id: memory_extract
+      shell: bash
+      run: |
+        EXEC_FILE="${{ steps.memory_review.outputs.execution_file }}"
+        DEFAULT='{"passed":true,"status":"passed","summary":"Memory review completed"}'
+
+        if [ -f "$EXEC_FILE" ]; then
+          LAST_TEXT=$(jq -r '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last // ""' "$EXEC_FILE" 2>/dev/null)
+          OUTPUT=$(echo "$LAST_TEXT" | sed -n '/```json/,/```/{/```json/d;/```/d;p;}' | tr -d '\r')
+          if echo "$OUTPUT" | jq . >/dev/null 2>&1 && [ -n "$OUTPUT" ]; then
+            PASSED=$(echo "$OUTPUT" | jq -r '.passed // true')
+            OUTPUT=$(echo "$OUTPUT" | jq --arg s "$([ "$PASSED" = "true" ] && echo "passed" || echo "failed")" '. + {status: $s}')
+            echo "$OUTPUT" > /tmp/memory_result.json
+          else
+            echo "$DEFAULT" > /tmp/memory_result.json
+          fi
+        else
+          echo "$DEFAULT" > /tmp/memory_result.json
+        fi
+
+    # ============== AGENTS SUB-REVIEW ==============
+    - name: Agents Review
+      if: steps.detect.outputs.has_agents == 'true'
+      id: agents_review
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_tools: "View,GlobTool,Grep,Bash(cat:*),Bash(find:*)"
+        max_turns: 10
+        prompt: |
+          # Agents Quality Review
+
+          Review .claude/agents/*.md files for quality and context optimization.
+
+          ## Your Task
+          1. Find changed agent files in /tmp/changed_files.txt
+          2. Read each changed agent file
+          3. Evaluate:
+             - Frontmatter: description, capabilities
+             - Content structure: clear heading, when to use, what it does
+             - Context efficiency: not too verbose, focused on one domain
+
+          ## Output Format
+          ```json
+          {
+            "passed": true/false,
+            "confidence": 0.0-1.0,
+            "agent_evaluations": [
+              {
+                "file": "path",
+                "frontmatter_valid": true/false,
+                "context_score": 1-10,
+                "issues": ["issues"],
+                "suggestions": ["suggestions"]
+              }
+            ],
+            "summary": "Brief summary"
+          }
+          ```
+
+    - name: Extract agents result
+      if: steps.detect.outputs.has_agents == 'true'
+      id: agents_extract
+      shell: bash
+      run: |
+        EXEC_FILE="${{ steps.agents_review.outputs.execution_file }}"
+        DEFAULT='{"passed":true,"status":"passed","summary":"Agents review completed"}'
+
+        if [ -f "$EXEC_FILE" ]; then
+          LAST_TEXT=$(jq -r '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last // ""' "$EXEC_FILE" 2>/dev/null)
+          OUTPUT=$(echo "$LAST_TEXT" | sed -n '/```json/,/```/{/```json/d;/```/d;p;}' | tr -d '\r')
+          if echo "$OUTPUT" | jq . >/dev/null 2>&1 && [ -n "$OUTPUT" ]; then
+            PASSED=$(echo "$OUTPUT" | jq -r '.passed // true')
+            OUTPUT=$(echo "$OUTPUT" | jq --arg s "$([ "$PASSED" = "true" ] && echo "passed" || echo "failed")" '. + {status: $s}')
+            echo "$OUTPUT" > /tmp/agents_result.json
+          else
+            echo "$DEFAULT" > /tmp/agents_result.json
+          fi
+        else
+          echo "$DEFAULT" > /tmp/agents_result.json
+        fi
+
+    # ============== SKILLS SUB-REVIEW ==============
+    - name: Skills Review
+      if: steps.detect.outputs.has_skills == 'true'
+      id: skills_review
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_tools: "View,GlobTool,Grep,Bash(cat:*),Bash(find:*)"
+        max_turns: 10
+        prompt: |
+          # Skills Quality Review
+
+          Review .claude/skills/**/SKILL.md files for quality and context efficiency.
+
+          ## Your Task
+          1. Find changed skill files in /tmp/changed_files.txt
+          2. Read each changed skill file
+          3. Evaluate:
+             - Frontmatter: description, capabilities
+             - Structure: clear title, examples, documentation links
+             - Context efficiency: focused, actionable, not duplicating general knowledge
+
+          ## Output Format
+          ```json
+          {
+            "passed": true/false,
+            "confidence": 0.0-1.0,
+            "skill_evaluations": [
+              {
+                "file": "path",
+                "frontmatter_valid": true/false,
+                "context_efficiency": 1-10,
+                "issues": ["issues"],
+                "suggestions": ["suggestions"]
+              }
+            ],
+            "summary": "Brief summary"
+          }
+          ```
+
+    - name: Extract skills result
+      if: steps.detect.outputs.has_skills == 'true'
+      id: skills_extract
+      shell: bash
+      run: |
+        EXEC_FILE="${{ steps.skills_review.outputs.execution_file }}"
+        DEFAULT='{"passed":true,"status":"passed","summary":"Skills review completed"}'
+
+        if [ -f "$EXEC_FILE" ]; then
+          LAST_TEXT=$(jq -r '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last // ""' "$EXEC_FILE" 2>/dev/null)
+          OUTPUT=$(echo "$LAST_TEXT" | sed -n '/```json/,/```/{/```json/d;/```/d;p;}' | tr -d '\r')
+          if echo "$OUTPUT" | jq . >/dev/null 2>&1 && [ -n "$OUTPUT" ]; then
+            PASSED=$(echo "$OUTPUT" | jq -r '.passed // true')
+            OUTPUT=$(echo "$OUTPUT" | jq --arg s "$([ "$PASSED" = "true" ] && echo "passed" || echo "failed")" '. + {status: $s}')
+            echo "$OUTPUT" > /tmp/skills_result.json
+          else
+            echo "$DEFAULT" > /tmp/skills_result.json
+          fi
+        else
+          echo "$DEFAULT" > /tmp/skills_result.json
+        fi
+
+    # ============== AGGREGATE RESULTS ==============
+    - name: Aggregate all results
+      id: aggregate
+      shell: bash
+      run: |
+        # Set defaults for skipped reviews
+        [ -f /tmp/rules_result.json ] || echo '{"status":"skipped","summary":"No rules files found"}' > /tmp/rules_result.json
+        [ -f /tmp/memory_result.json ] || echo '{"status":"skipped","summary":"No CLAUDE.md files found"}' > /tmp/memory_result.json
+        [ -f /tmp/agents_result.json ] || echo '{"status":"skipped","summary":"No agent files changed"}' > /tmp/agents_result.json
+        [ -f /tmp/skills_result.json ] || echo '{"status":"skipped","summary":"No skill files changed"}' > /tmp/skills_result.json
+
+        # Check if all passed (skipped counts as passed)
+        ALL_PASSED=true
+
+        for result_file in /tmp/rules_result.json /tmp/memory_result.json /tmp/agents_result.json /tmp/skills_result.json; do
+          status=$(jq -r '.status // "skipped"' "$result_file")
+          if [ "$status" = "failed" ]; then
+            ALL_PASSED=false
+          fi
+        done
+
+        # Build aggregated JSON
+        AGGREGATED=$(jq -n \
+          --slurpfile rules /tmp/rules_result.json \
+          --slurpfile memory /tmp/memory_result.json \
+          --slurpfile agents /tmp/agents_result.json \
+          --slurpfile skills /tmp/skills_result.json \
+          --arg passed "$ALL_PASSED" \
+          '{
+            passed: ($passed == "true"),
+            status: (if $passed == "true" then "passed" else "failed" end),
+            sub_reviews: {
+              rules: $rules[0],
+              project_memory: $memory[0],
+              agents: $agents[0],
+              skills: $skills[0]
+            },
+            summary: "Context review completed: rules, memory, agents, skills"
+          }')
+
+        echo "passed=$ALL_PASSED" >> $GITHUB_OUTPUT
+
+        # Escape for output
+        RESULT_JSON=$(echo "$AGGREGATED" | jq -c '.')
+        echo "result_json=$RESULT_JSON" >> $GITHUB_OUTPUT

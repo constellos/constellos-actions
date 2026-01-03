@@ -14,15 +14,31 @@ ci:
     enabled: true
     framework: playwright
 
-  # Code Reviews (runs on every commit)
+  # Code Reviews (4 review types)
+  # Requirements Review must pass before others run
   reviews:
     enabled: true
+
+    # Requirements Review (GATE - must pass first)
+    # Checks code against linked issue requirements
     requirements: true
-    rules: true
-    project_memory: true
-    agents: true
-    skills: true
-    playwright_ui: true
+
+    # UI Review (Playwright screenshots)
+    # Reviews visual design, accessibility, UX
+    ui: true
+
+    # Code Quality Review (NEW)
+    # Evaluates DRY, YAGNI, modularity, complexity, coupling, cohesion
+    code_quality: true
+
+    # Context Review (combines 4 sub-reviews)
+    # Rules, Project Memory, Agents, Skills
+    context:
+      enabled: true
+      rules: true           # .claude/rules/*.md
+      project_memory: true  # CLAUDE.md files
+      agents: true          # .claude/agents/*.md
+      skills: true          # .claude/skills/**/SKILL.md
 
   # Deployment CI (PR only)
   deployment:

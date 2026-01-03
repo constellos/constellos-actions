@@ -33,13 +33,11 @@ runs:
         # Parse review results
         echo "$REVIEW_RESULTS" > /tmp/review_results.json
 
-        # Extract individual review data with defaults
+        # Extract individual review data (4 reviews now)
         REQUIREMENTS=$(echo "$REVIEW_RESULTS" | jq -r '.requirements // {}')
-        RULES=$(echo "$REVIEW_RESULTS" | jq -r '.rules // {}')
-        PROJECT_MEMORY=$(echo "$REVIEW_RESULTS" | jq -r '.project_memory // {}')
-        AGENTS=$(echo "$REVIEW_RESULTS" | jq -r '.agents // {}')
-        SKILLS=$(echo "$REVIEW_RESULTS" | jq -r '.skills // {}')
         UI=$(echo "$REVIEW_RESULTS" | jq -r '.ui // {}')
+        CODE_QUALITY=$(echo "$REVIEW_RESULTS" | jq -r '.code_quality // {}')
+        CONTEXT=$(echo "$REVIEW_RESULTS" | jq -r '.context // {}')
 
         # Get commit SHA
         COMMIT_SHA="${{ github.sha }}"
@@ -61,131 +59,98 @@ runs:
         }
 
         count_review "$REQUIREMENTS"
-        count_review "$RULES"
-        count_review "$PROJECT_MEMORY"
-        count_review "$AGENTS"
-        count_review "$SKILLS"
         count_review "$UI"
+        count_review "$CODE_QUALITY"
+        count_review "$CONTEXT"
 
-        # Helper function to generate status indicator
-        get_status_indicator() {
+        # Helper: generate status badge
+        get_status_badge() {
           local status="$1"
-          local confidence="$2"
-
           case "$status" in
-            "passed")
-              echo "PASSED | Confidence: $confidence"
-              ;;
-            "failed")
-              echo "FAILED | Confidence: $confidence"
-              ;;
-            "skipped")
-              echo "Skipped"
-              ;;
-            *)
-              echo "Unknown"
-              ;;
+            "passed") echo "PASSED" ;;
+            "failed") echo "FAILED" ;;
+            "skipped") echo "Skipped" ;;
+            *) echo "Unknown" ;;
           esac
         }
 
-        # Helper function to generate dropdown section
-        generate_dropdown() {
-          local title="$1"
-          local review_json="$2"
-          local skip_reason="$3"
-
-          local status=$(echo "$review_json" | jq -r '.status // "skipped"')
-          local confidence=$(echo "$review_json" | jq -r '.confidence // 0')
-          local summary=$(echo "$review_json" | jq -r '.summary // ""')
-          local content=$(echo "$review_json" | jq -r '.content // ""')
+        # Build Requirements section
+        build_requirements_section() {
+          local status=$(echo "$REQUIREMENTS" | jq -r '.status // "skipped"')
+          local confidence=$(echo "$REQUIREMENTS" | jq -r '.confidence // 0')
+          local summary=$(echo "$REQUIREMENTS" | jq -r '.summary // ""')
 
           if [ "$status" = "skipped" ]; then
-            cat <<DROPDOWN
+            cat <<EOF
         <details>
-        <summary>$title -- Skipped</summary>
+        <summary>Requirements Review -- Skipped</summary>
 
-        ${skip_reason:-No relevant files were modified.}
+        No linked issue found or no requirements to verify.
 
         </details>
-        DROPDOWN
+        EOF
           else
-            local status_icon
-            if [ "$status" = "passed" ]; then
-              status_icon="PASSED"
-            else
-              status_icon="FAILED"
+            local badge=$(get_status_badge "$status")
+            local met=$(echo "$REQUIREMENTS" | jq -r '.requirements_met // []')
+            local missing=$(echo "$REQUIREMENTS" | jq -r '.requirements_missing // []')
+
+            local content=""
+            if [ "$met" != "[]" ] && [ "$met" != "null" ]; then
+              content="${content}
+
+        ### Requirements Met"
+              while IFS= read -r req; do
+                [ -n "$req" ] && [ "$req" != "null" ] && content="${content}
+        - $req"
+              done < <(echo "$met" | jq -r '.[]' 2>/dev/null)
             fi
 
-            cat <<DROPDOWN
+            if [ "$missing" != "[]" ] && [ "$missing" != "null" ]; then
+              content="${content}
+
+        ### Requirements Missing"
+              while IFS= read -r req; do
+                [ -n "$req" ] && [ "$req" != "null" ] && content="${content}
+        - $req"
+              done < <(echo "$missing" | jq -r '.[]' 2>/dev/null)
+            fi
+
+            cat <<EOF
         <details>
-        <summary>$title $status_icon | Confidence: $confidence</summary>
+        <summary>Requirements Review $badge | Confidence: $confidence</summary>
 
         ### Summary
         $summary
-
         $content
 
         </details>
-        DROPDOWN
+        EOF
           fi
         }
 
-        # Generate requirements section content
-        generate_requirements_content() {
-          local review_json="$1"
-          local status=$(echo "$review_json" | jq -r '.status // "skipped"')
+        # Build UI section
+        build_ui_section() {
+          local status=$(echo "$UI" | jq -r '.status // "skipped"')
+          local confidence=$(echo "$UI" | jq -r '.confidence // 0')
+          local summary=$(echo "$UI" | jq -r '.summary // ""')
 
           if [ "$status" = "skipped" ]; then
-            return
-          fi
+            cat <<EOF
+        <details>
+        <summary>UI Review -- Skipped</summary>
 
-          local met=$(echo "$review_json" | jq -r '.requirements_met // []')
-          local missing=$(echo "$review_json" | jq -r '.requirements_missing // []')
+        No UI files changed or no screenshots available.
 
-          local content=""
+        </details>
+        EOF
+          else
+            local badge=$(get_status_badge "$status")
+            local bp=$(echo "$UI" | jq -r '.best_practices_evaluation // {}')
+            local critical=$(echo "$UI" | jq -r '.total_critical // 0')
+            local major=$(echo "$UI" | jq -r '.total_major // 0')
+            local minor=$(echo "$UI" | jq -r '.total_minor // 0')
 
-          if [ "$met" != "[]" ] && [ "$met" != "null" ]; then
-            content="${content}
-        ### Requirements Met"
-            while IFS= read -r req; do
-              if [ -n "$req" ] && [ "$req" != "null" ]; then
-                content="${content}
-        - $req"
-              fi
-            done < <(echo "$met" | jq -r '.[]')
-          fi
-
-          if [ "$missing" != "[]" ] && [ "$missing" != "null" ]; then
-            content="${content}
-
-        ### Requirements Missing"
-            while IFS= read -r req; do
-              if [ -n "$req" ] && [ "$req" != "null" ]; then
-                content="${content}
-        - $req"
-              fi
-            done < <(echo "$missing" | jq -r '.[]')
-          fi
-
-          echo "$content"
-        }
-
-        # Generate UI section content with scores table
-        generate_ui_content() {
-          local review_json="$1"
-          local status=$(echo "$review_json" | jq -r '.status // "skipped"')
-
-          if [ "$status" = "skipped" ]; then
-            return
-          fi
-
-          local bp=$(echo "$review_json" | jq -r '.best_practices_evaluation // {}')
-          local critical=$(echo "$review_json" | jq -r '.total_critical // 0')
-          local major=$(echo "$review_json" | jq -r '.total_major // 0')
-          local minor=$(echo "$review_json" | jq -r '.total_minor // 0')
-          local recs=$(echo "$review_json" | jq -r '.top_recommendations // []')
-
-          local content="
+            local content="
         ### Issue Summary
         | Level | Count |
         |-------|-------|
@@ -193,272 +158,183 @@ runs:
         | Major | $major |
         | Minor | $minor |"
 
-          if [ "$bp" != "{}" ] && [ "$bp" != "null" ]; then
-            local visual=$(echo "$bp" | jq -r '.visual_design // "N/A"')
-            local layout=$(echo "$bp" | jq -r '.layout_responsiveness // "N/A"')
-            local a11y=$(echo "$bp" | jq -r '.accessibility // "N/A"')
-            local ux=$(echo "$bp" | jq -r '.user_experience // "N/A"')
-            local elegance=$(echo "$bp" | jq -r '.modern_elegance // "N/A"')
+            if [ "$bp" != "{}" ] && [ "$bp" != "null" ]; then
+              local visual=$(echo "$bp" | jq -r '.visual_design // "N/A"')
+              local layout=$(echo "$bp" | jq -r '.layout_responsiveness // "N/A"')
+              local a11y=$(echo "$bp" | jq -r '.accessibility // "N/A"')
+              local ux=$(echo "$bp" | jq -r '.user_experience // "N/A"')
+              local elegance=$(echo "$bp" | jq -r '.modern_elegance // "N/A"')
 
-            content="${content}
+              content="${content}
 
         ### Best Practices Scores
         | Category | Score |
         |----------|-------|
         | Visual Design | ${visual}/10 |
-        | Layout & Responsiveness | ${layout}/10 |
+        | Layout | ${layout}/10 |
         | Accessibility | ${a11y}/10 |
-        | User Experience | ${ux}/10 |
-        | Modern Elegance | ${elegance}/10 |"
+        | UX | ${ux}/10 |
+        | Elegance | ${elegance}/10 |"
+            fi
+
+            cat <<EOF
+        <details>
+        <summary>UI Review $badge | Confidence: $confidence</summary>
+
+        ### Summary
+        $summary
+        $content
+
+        </details>
+        EOF
           fi
-
-          if [ "$recs" != "[]" ] && [ "$recs" != "null" ]; then
-            content="${content}
-
-        ### Top Recommendations"
-            local i=1
-            while IFS= read -r rec; do
-              if [ -n "$rec" ] && [ "$rec" != "null" ]; then
-                content="${content}
-        $i. $rec"
-                i=$((i + 1))
-              fi
-            done < <(echo "$recs" | jq -r '.[]')
-          fi
-
-          echo "$content"
         }
 
-        # Build the complete comment body
-        build_comment_body() {
-          # Requirements section
-          local req_status=$(echo "$REQUIREMENTS" | jq -r '.status // "skipped"')
-          local req_confidence=$(echo "$REQUIREMENTS" | jq -r '.confidence // 0')
-          local req_summary=$(echo "$REQUIREMENTS" | jq -r '.summary // ""')
-          local req_content=$(generate_requirements_content "$REQUIREMENTS")
+        # Build Code Quality section
+        build_code_quality_section() {
+          local status=$(echo "$CODE_QUALITY" | jq -r '.status // "skipped"')
+          local confidence=$(echo "$CODE_QUALITY" | jq -r '.confidence // 0')
+          local summary=$(echo "$CODE_QUALITY" | jq -r '.summary // ""')
 
-          local requirements_section
-          if [ "$req_status" = "skipped" ]; then
-            requirements_section="<details>
-        <summary>Requirements Review -- Skipped</summary>
+          if [ "$status" = "skipped" ]; then
+            cat <<EOF
+        <details>
+        <summary>Code Quality Review -- Skipped</summary>
 
-        No linked issue found or no requirements to verify.
+        No code files changed.
 
-        </details>"
+        </details>
+        EOF
           else
-            local req_icon
-            if [ "$req_status" = "passed" ]; then
-              req_icon="PASSED"
-            else
-              req_icon="FAILED"
+            local badge=$(get_status_badge "$status")
+            local scores=$(echo "$CODE_QUALITY" | jq -r '.principle_scores // {}')
+
+            local content=""
+            if [ "$scores" != "{}" ] && [ "$scores" != "null" ]; then
+              local dry=$(echo "$scores" | jq -r '.dry // "N/A"')
+              local yagni=$(echo "$scores" | jq -r '.yagni // "N/A"')
+              local modularity=$(echo "$scores" | jq -r '.modularity // "N/A"')
+              local complexity=$(echo "$scores" | jq -r '.complexity // "N/A"')
+              local coupling=$(echo "$scores" | jq -r '.coupling // "N/A"')
+              local cohesion=$(echo "$scores" | jq -r '.cohesion // "N/A"')
+
+              content="
+        ### Principle Scores
+        | Principle | Score |
+        |-----------|-------|
+        | DRY | ${dry}/10 |
+        | YAGNI | ${yagni}/10 |
+        | Modularity | ${modularity}/10 |
+        | Complexity | ${complexity}/10 |
+        | Coupling | ${coupling}/10 |
+        | Cohesion | ${cohesion}/10 |"
             fi
-            requirements_section="<details>
-        <summary>Requirements Review $req_icon | Confidence: $req_confidence</summary>
+
+            local blocking=$(echo "$CODE_QUALITY" | jq -r '.blocking_issues // []')
+            if [ "$blocking" != "[]" ] && [ "$blocking" != "null" ]; then
+              content="${content}
+
+        ### Blocking Issues"
+              while IFS= read -r issue; do
+                [ -n "$issue" ] && [ "$issue" != "null" ] && content="${content}
+        - $issue"
+              done < <(echo "$blocking" | jq -r '.[]' 2>/dev/null)
+            fi
+
+            cat <<EOF
+        <details>
+        <summary>Code Quality Review $badge | Confidence: $confidence</summary>
 
         ### Summary
-        $req_summary
-        $req_content
+        $summary
+        $content
 
-        </details>"
+        </details>
+        EOF
           fi
+        }
 
-          # Rules section
-          local rules_status=$(echo "$RULES" | jq -r '.status // "skipped"')
-          local rules_confidence=$(echo "$RULES" | jq -r '.confidence // 0')
-          local rules_summary=$(echo "$RULES" | jq -r '.summary // ""')
-          local rules_content=$(echo "$RULES" | jq -r '.content // ""')
+        # Build Context section (with sub-reviews)
+        build_context_section() {
+          local status=$(echo "$CONTEXT" | jq -r '.status // "skipped"')
+          local summary=$(echo "$CONTEXT" | jq -r '.summary // ""')
 
-          local rules_section
-          if [ "$rules_status" = "skipped" ]; then
-            rules_section="<details>
-        <summary>Rules Review -- Skipped</summary>
+          if [ "$status" = "skipped" ]; then
+            cat <<EOF
+        <details>
+        <summary>Context Review -- Skipped</summary>
 
-        No rules files found or no applicable rules.
+        No context files to review.
 
-        </details>"
+        </details>
+        EOF
           else
-            local rules_icon
-            if [ "$rules_status" = "passed" ]; then
-              rules_icon="PASSED"
-            else
-              rules_icon="FAILED"
-            fi
-            rules_section="<details>
-        <summary>Rules Review $rules_icon | Confidence: $rules_confidence</summary>
+            local badge=$(get_status_badge "$status")
+
+            # Extract sub-reviews
+            local rules_status=$(echo "$CONTEXT" | jq -r '.sub_reviews.rules.status // "skipped"')
+            local memory_status=$(echo "$CONTEXT" | jq -r '.sub_reviews.project_memory.status // "skipped"')
+            local agents_status=$(echo "$CONTEXT" | jq -r '.sub_reviews.agents.status // "skipped"')
+            local skills_status=$(echo "$CONTEXT" | jq -r '.sub_reviews.skills.status // "skipped"')
+
+            local rules_summary=$(echo "$CONTEXT" | jq -r '.sub_reviews.rules.summary // "N/A"')
+            local memory_summary=$(echo "$CONTEXT" | jq -r '.sub_reviews.project_memory.summary // "N/A"')
+            local agents_summary=$(echo "$CONTEXT" | jq -r '.sub_reviews.agents.summary // "N/A"')
+            local skills_summary=$(echo "$CONTEXT" | jq -r '.sub_reviews.skills.summary // "N/A"')
+
+            cat <<EOF
+        <details>
+        <summary>Context Review $badge</summary>
 
         ### Summary
-        $rules_summary
+        $summary
 
-        $rules_content
+        #### Sub-Reviews
 
-        </details>"
+        | Review | Status | Summary |
+        |--------|--------|---------|
+        | Rules | $(get_status_badge "$rules_status") | $rules_summary |
+        | Project Memory | $(get_status_badge "$memory_status") | $memory_summary |
+        | Agents | $(get_status_badge "$agents_status") | $agents_summary |
+        | Skills | $(get_status_badge "$skills_status") | $skills_summary |
+
+        </details>
+        EOF
           fi
+        }
 
-          # Project Memory section
-          local pm_status=$(echo "$PROJECT_MEMORY" | jq -r '.status // "skipped"')
-          local pm_confidence=$(echo "$PROJECT_MEMORY" | jq -r '.confidence // 0')
-          local pm_summary=$(echo "$PROJECT_MEMORY" | jq -r '.summary // ""')
-          local pm_content=$(echo "$PROJECT_MEMORY" | jq -r '.content // ""')
+        # Build the complete comment
+        REQUIREMENTS_SECTION=$(build_requirements_section)
+        UI_SECTION=$(build_ui_section)
+        CODE_QUALITY_SECTION=$(build_code_quality_section)
+        CONTEXT_SECTION=$(build_context_section)
 
-          local pm_section
-          if [ "$pm_status" = "skipped" ]; then
-            pm_section="<details>
-        <summary>Project Memory Review -- Skipped</summary>
-
-        No CLAUDE.md files were modified.
-
-        </details>"
-          else
-            local pm_icon
-            if [ "$pm_status" = "passed" ]; then
-              pm_icon="PASSED"
-            else
-              pm_icon="FAILED"
-            fi
-            pm_section="<details>
-        <summary>Project Memory Review $pm_icon | Confidence: $pm_confidence</summary>
-
-        ### Summary
-        $pm_summary
-
-        $pm_content
-
-        </details>"
-          fi
-
-          # Agents section
-          local agents_status=$(echo "$AGENTS" | jq -r '.status // "skipped"')
-          local agents_confidence=$(echo "$AGENTS" | jq -r '.confidence // 0')
-          local agents_summary=$(echo "$AGENTS" | jq -r '.summary // ""')
-          local agents_content=$(echo "$AGENTS" | jq -r '.content // ""')
-
-          local agents_section
-          if [ "$agents_status" = "skipped" ]; then
-            agents_section="<details>
-        <summary>Agents Review -- Skipped</summary>
-
-        No agent files were modified.
-
-        </details>"
-          else
-            local agents_icon
-            if [ "$agents_status" = "passed" ]; then
-              agents_icon="PASSED"
-            else
-              agents_icon="FAILED"
-            fi
-            agents_section="<details>
-        <summary>Agents Review $agents_icon | Confidence: $agents_confidence</summary>
-
-        ### Summary
-        $agents_summary
-
-        $agents_content
-
-        </details>"
-          fi
-
-          # Skills section
-          local skills_status=$(echo "$SKILLS" | jq -r '.status // "skipped"')
-          local skills_confidence=$(echo "$SKILLS" | jq -r '.confidence // 0')
-          local skills_summary=$(echo "$SKILLS" | jq -r '.summary // ""')
-          local skills_content=$(echo "$SKILLS" | jq -r '.content // ""')
-
-          local skills_section
-          if [ "$skills_status" = "skipped" ]; then
-            skills_section="<details>
-        <summary>Skills Review -- Skipped</summary>
-
-        No skill files were modified.
-
-        </details>"
-          else
-            local skills_icon
-            if [ "$skills_status" = "passed" ]; then
-              skills_icon="PASSED"
-            else
-              skills_icon="FAILED"
-            fi
-            skills_section="<details>
-        <summary>Skills Review $skills_icon | Confidence: $skills_confidence</summary>
-
-        ### Summary
-        $skills_summary
-
-        $skills_content
-
-        </details>"
-          fi
-
-          # UI section
-          local ui_status=$(echo "$UI" | jq -r '.status // "skipped"')
-          local ui_confidence=$(echo "$UI" | jq -r '.confidence // 0')
-          local ui_summary=$(echo "$UI" | jq -r '.summary // ""')
-          local ui_content=$(generate_ui_content "$UI")
-
-          local ui_section
-          if [ "$ui_status" = "skipped" ]; then
-            ui_section="<details>
-        <summary>UI Review -- Skipped</summary>
-
-        No UI files were modified.
-
-        </details>"
-          else
-            local ui_icon
-            if [ "$ui_status" = "passed" ]; then
-              ui_icon="PASSED"
-            else
-              ui_icon="FAILED"
-            fi
-            ui_section="<details>
-        <summary>UI Review $ui_icon | Confidence: $ui_confidence</summary>
-
-        ### Summary
-        $ui_summary
-        $ui_content
-
-        </details>"
-          fi
-
-          # Combine all sections
-          cat <<COMMENT
-        $COMMENT_MARKER
+        COMMENT_BODY="$COMMENT_MARKER
         ## Code Review Results
 
         **Commit:** \`$SHORT_SHA\` | **Status:** $PASSED/$TOTAL Passed
 
         ---
 
-        $requirements_section
+        $REQUIREMENTS_SECTION
 
-        $rules_section
+        $UI_SECTION
 
-        $pm_section
+        $CODE_QUALITY_SECTION
 
-        $agents_section
-
-        $skills_section
-
-        $ui_section
+        $CONTEXT_SECTION
 
         ---
 
-        *Automated by Claude Code CI*
-        COMMENT
-        }
+        *Automated by Claude Code CI*"
 
-        # Build the comment body
-        COMMENT_BODY=$(build_comment_body)
-
-        # Save comment body to file for API call
+        # Save comment body
         echo "$COMMENT_BODY" > /tmp/comment_body.md
 
         # Get PR number
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           PR_NUMBER="${{ github.event.pull_request.number }}"
         else
-          # Try to find PR for this commit
           PR_NUMBER=$(gh pr list --state open --json number,headRefName --jq ".[] | select(.headRefName == \"${{ github.ref_name }}\") | .number" 2>/dev/null || echo "")
         fi
 
@@ -469,7 +345,7 @@ runs:
           exit 0
         fi
 
-        # Find existing comment with marker
+        # Find existing comment
         EXISTING_COMMENT_ID=$(gh api \
           -H "Accept: application/vnd.github+json" \
           -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -478,30 +354,25 @@ runs:
           2>/dev/null | head -1)
 
         if [ -n "$EXISTING_COMMENT_ID" ]; then
-          # Update existing comment
           RESPONSE=$(gh api \
             --method PATCH \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "/repos/${{ github.repository }}/issues/comments/${EXISTING_COMMENT_ID}" \
             -f body="$(cat /tmp/comment_body.md)")
-
           COMMENT_ID="$EXISTING_COMMENT_ID"
-          COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
           echo "Updated existing comment: $COMMENT_ID"
         else
-          # Create new comment
           RESPONSE=$(gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
             -f body="$(cat /tmp/comment_body.md)")
-
           COMMENT_ID=$(echo "$RESPONSE" | jq -r '.id')
-          COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
           echo "Created new comment: $COMMENT_ID"
         fi
 
+        COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
         echo "comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
         echo "comment_url=$COMMENT_URL" >> $GITHUB_OUTPUT
