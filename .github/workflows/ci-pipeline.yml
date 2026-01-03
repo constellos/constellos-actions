@@ -1,7 +1,4 @@
-name: CI Pipeline
-
-# Unified CI pipeline that orchestrates the entire CI flow
-# 4 Review Types: Requirements (gate), UI, Code Quality, Context
+name: CI
 
 on:
   push:
@@ -12,483 +9,59 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  issues: write
-  statuses: write
+  issues: read
 
 concurrency:
-  group: ci-pipeline-${{ github.head_ref || github.ref_name }}
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
-  # =============================================================================
-  # STAGE 1: Configuration
-  # =============================================================================
-  config:
-    name: Read CI Config
+  # ============================================
+  # Job 1: Static Analysis (Lint + Types)
+  # ============================================
+  static-analysis:
+    name: Static Analysis
     runs-on: ubuntu-latest
-    outputs:
-      basic_enabled: ${{ steps.config.outputs.basic_enabled }}
-      lint_enabled: ${{ steps.config.outputs.lint_enabled }}
-      typecheck_enabled: ${{ steps.config.outputs.typecheck_enabled }}
-      vitest_enabled: ${{ steps.config.outputs.vitest_enabled }}
-      e2e_enabled: ${{ steps.config.outputs.e2e_enabled }}
-      reviews_enabled: ${{ steps.config.outputs.reviews_enabled }}
-      requirements_review: ${{ steps.config.outputs.requirements_review }}
-      ui_review: ${{ steps.config.outputs.ui_review }}
-      code_quality_review: ${{ steps.config.outputs.code_quality_review }}
-      context_review: ${{ steps.config.outputs.context_review }}
-      deployment_enabled: ${{ steps.config.outputs.deployment_enabled }}
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install yq
-        run: |
-          sudo wget -q https://github.com/mikefarah/yq/releases/download/v4.35.1/yq_linux_amd64 -O /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
+      - uses: ./.github/actions/static-analysis
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read CI config
-        id: config
-        run: |
-          CONFIG_FILE=".github/ci-config.yml"
-
-          if [ -f "$CONFIG_FILE" ]; then
-            # Basic CI
-            echo "basic_enabled=$(yq '.ci.basic.enabled // true' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-            echo "lint_enabled=$(yq '.ci.basic.lint // true' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-            echo "typecheck_enabled=$(yq '.ci.basic.typecheck // true' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-            echo "vitest_enabled=$(yq '.ci.basic.vitest // true' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-
-            # E2E
-            echo "e2e_enabled=$(yq '.ci.e2e.enabled // false' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-
-            # Reviews (new 4-review structure)
-            echo "reviews_enabled=$(yq '.ci.reviews.enabled // false' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-            echo "requirements_review=$(yq '.ci.reviews.requirements // false' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-            echo "ui_review=$(yq '.ci.reviews.ui // false' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-            echo "code_quality_review=$(yq '.ci.reviews.code_quality // false' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-            echo "context_review=$(yq '.ci.reviews.context.enabled // false' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-
-            # Deployment
-            echo "deployment_enabled=$(yq '.ci.deployment.enabled // false' $CONFIG_FILE)" >> $GITHUB_OUTPUT
-          else
-            # Defaults when no config file
-            echo "basic_enabled=true" >> $GITHUB_OUTPUT
-            echo "lint_enabled=true" >> $GITHUB_OUTPUT
-            echo "typecheck_enabled=true" >> $GITHUB_OUTPUT
-            echo "vitest_enabled=true" >> $GITHUB_OUTPUT
-            echo "e2e_enabled=false" >> $GITHUB_OUTPUT
-            echo "reviews_enabled=false" >> $GITHUB_OUTPUT
-            echo "requirements_review=false" >> $GITHUB_OUTPUT
-            echo "ui_review=false" >> $GITHUB_OUTPUT
-            echo "code_quality_review=false" >> $GITHUB_OUTPUT
-            echo "context_review=false" >> $GITHUB_OUTPUT
-            echo "deployment_enabled=false" >> $GITHUB_OUTPUT
-          fi
-
-  # =============================================================================
-  # STAGE 2: Basic CI (Lint, Typecheck, Unit Tests)
-  # =============================================================================
-  changed-files:
-    name: Detect Changed Files
-    needs: config
-    if: needs.config.outputs.basic_enabled == 'true'
+  # ============================================
+  # Job 2: Tests (Unit + E2E)
+  # Requires: Static Analysis passes
+  # ============================================
+  tests:
+    name: Tests
+    needs: static-analysis
     runs-on: ubuntu-latest
-    outputs:
-      has_ts_files: ${{ steps.filter.outputs.has_ts_files }}
-      has_test_files: ${{ steps.filter.outputs.has_test_files }}
-      ts_files: ${{ steps.filter.outputs.ts_files }}
-      test_files: ${{ steps.filter.outputs.test_files }}
+    steps:
+      - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/tests
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          has_app: 'false'  # Set to 'true' for repos with apps
+
+  # ============================================
+  # Job 3: Reviews (Requirements, Code Quality, Context, UI)
+  # Requires: Tests pass
+  # Only runs on pull_request
+  # ============================================
+  reviews:
+    name: Reviews
+    needs: tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get changed files
-        id: filter
-        uses: ./.github/actions/changed-files
-        with:
-          pattern: '\.(ts|tsx|js|jsx|test\.ts|test\.tsx)$'
-
-  lint:
-    name: Lint
-    needs: [config, changed-files]
-    if: |
-      always() &&
-      needs.config.result == 'success' &&
-      needs.changed-files.result == 'success' &&
-      needs.config.outputs.lint_enabled == 'true' &&
-      needs.changed-files.outputs.has_ts_files == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: constellos/.github/actions/lint@main
-        with:
-          files: ${{ needs.changed-files.outputs.ts_files }}
-
-  typecheck:
-    name: Typecheck
-    needs: [config, changed-files]
-    if: |
-      always() &&
-      needs.config.result == 'success' &&
-      needs.changed-files.result == 'success' &&
-      needs.config.outputs.typecheck_enabled == 'true' &&
-      needs.changed-files.outputs.has_ts_files == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: constellos/.github/actions/typecheck@main
-        with:
-          files: ${{ needs.changed-files.outputs.ts_files }}
-
-  unit-tests:
-    name: Unit Tests
-    needs: [config, changed-files]
-    if: |
-      always() &&
-      needs.config.result == 'success' &&
-      needs.changed-files.result == 'success' &&
-      needs.config.outputs.vitest_enabled == 'true' &&
-      needs.changed-files.outputs.has_test_files == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: constellos/.github/actions/unit-tests@main
-        with:
-          files: ${{ needs.changed-files.outputs.test_files }}
-
-  basic-ci-complete:
-    name: Basic CI Complete
-    needs: [config, changed-files, lint, typecheck, unit-tests]
-    if: always()
-    runs-on: ubuntu-latest
-    outputs:
-      success: ${{ steps.check.outputs.success }}
-    steps:
-      - name: Check basic CI results
-        id: check
-        run: |
-          LINT_RESULT="${{ needs.lint.result }}"
-          TYPECHECK_RESULT="${{ needs.typecheck.result }}"
-          UNIT_TESTS_RESULT="${{ needs.unit-tests.result }}"
-
-          echo "Lint: $LINT_RESULT"
-          echo "Typecheck: $TYPECHECK_RESULT"
-          echo "Unit Tests: $UNIT_TESTS_RESULT"
-
-          if [[ "$LINT_RESULT" == "failure" ]] || \
-             [[ "$TYPECHECK_RESULT" == "failure" ]] || \
-             [[ "$UNIT_TESTS_RESULT" == "failure" ]]; then
-            echo "success=false" >> $GITHUB_OUTPUT
-            echo "::error::Basic CI failed"
-            exit 1
-          fi
-
-          echo "success=true" >> $GITHUB_OUTPUT
-
-  # =============================================================================
-  # STAGE 3: E2E Tests
-  # =============================================================================
-  e2e-tests:
-    name: E2E Tests
-    needs: [config, basic-ci-complete]
-    if: |
-      always() &&
-      needs.config.outputs.e2e_enabled == 'true' &&
-      needs.basic-ci-complete.result == 'success' &&
-      needs.basic-ci-complete.outputs.success == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      tests_passed: ${{ steps.result.outputs.passed }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-
-      - name: Run Playwright tests
-        id: playwright
-        continue-on-error: true
-        run: |
-          mkdir -p .playwright-screenshots
-          npx playwright test \
-            --project=chromium \
-            --reporter=list,html \
-            --screenshot=on \
-            --output=.playwright-screenshots \
-            2>&1 | tee playwright-output.txt
-
-      - name: Collect screenshots
-        id: screenshots
-        run: |
-          mkdir -p .claude/screenshots
-
-          find .playwright-screenshots -name "*.png" -type f 2>/dev/null | while read -r file; do
-            UNIQUE_NAME=$(echo "$file" | sed 's/[\/\.]/_/g' | sed 's/^_//')
-            cp "$file" ".claude/screenshots/${UNIQUE_NAME}.png"
-          done
-
-          COUNT=$(ls -1 .claude/screenshots/*.png 2>/dev/null | wc -l || echo "0")
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
-
-      - name: Upload screenshots artifact
-        if: steps.screenshots.outputs.count > 0
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-screenshots-${{ github.sha }}
-          path: .claude/screenshots/
-          retention-days: 7
-
-      - name: Set result
-        id: result
-        run: |
-          if [ "${{ steps.playwright.outcome }}" = "success" ]; then
-            echo "passed=true" >> $GITHUB_OUTPUT
-          else
-            echo "passed=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-  # =============================================================================
-  # STAGE 4: Code Reviews (Requirements must pass first, then others run)
-  # =============================================================================
-
-  # GATE: Requirements Review (must pass before other reviews start)
-  requirements-review:
-    name: Requirements Review
-    needs: [config, basic-ci-complete, e2e-tests]
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      needs.config.outputs.reviews_enabled == 'true' &&
-      needs.config.outputs.requirements_review == 'true' &&
-      needs.basic-ci-complete.result == 'success' &&
-      needs.basic-ci-complete.outputs.success == 'true' &&
-      (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped')
-    runs-on: ubuntu-latest
-    outputs:
-      passed: ${{ steps.review.outputs.passed }}
-      result_json: ${{ steps.review.outputs.result_json }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Requirements Review
-        id: review
-        uses: ./.github/actions/requirements-review
+      - uses: ./.github/actions/reviews
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-      - name: Fail if review failed
-        if: steps.review.outputs.passed != 'true'
-        run: |
-          echo "::error::Requirements review failed - blocking other reviews"
-          exit 1
-
-  # UI Review (runs after Requirements passes)
-  ui-review:
-    name: UI Review
-    needs: [config, requirements-review]
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      needs.requirements-review.result == 'success' &&
-      needs.requirements-review.outputs.passed == 'true' &&
-      needs.config.outputs.ui_review == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      passed: ${{ steps.review.outputs.passed }}
-      result_json: ${{ steps.review.outputs.result_json }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run UI Review
-        id: review
-        uses: ./.github/actions/ui-review
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-  # Code Quality Review (runs after Requirements passes)
-  code-quality-review:
-    name: Code Quality Review
-    needs: [config, requirements-review]
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      needs.requirements-review.result == 'success' &&
-      needs.requirements-review.outputs.passed == 'true' &&
-      needs.config.outputs.code_quality_review == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      passed: ${{ steps.review.outputs.passed }}
-      result_json: ${{ steps.review.outputs.result_json }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Code Quality Review
-        id: review
-        uses: ./.github/actions/code-quality-review
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-  # Context Review (runs after Requirements passes)
-  context-review:
-    name: Context Review
-    needs: [config, requirements-review]
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      needs.requirements-review.result == 'success' &&
-      needs.requirements-review.outputs.passed == 'true' &&
-      needs.config.outputs.context_review == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      passed: ${{ steps.review.outputs.passed }}
-      result_json: ${{ steps.review.outputs.result_json }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Context Review
-        id: review
-        uses: ./.github/actions/context-review
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-  # =============================================================================
-  # STAGE 5: Post Consolidated Comment
-  # =============================================================================
-  post-comment:
-    name: Post Review Summary
-    needs: [config, requirements-review, ui-review, code-quality-review, context-review]
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      needs.config.outputs.reviews_enabled == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build review results JSON
-        id: results
-        run: |
-          # Build JSON from job outputs
-          REQ_JSON='${{ needs.requirements-review.outputs.result_json }}'
-          UI_JSON='${{ needs.ui-review.outputs.result_json }}'
-          CQ_JSON='${{ needs.code-quality-review.outputs.result_json }}'
-          CTX_JSON='${{ needs.context-review.outputs.result_json }}'
-
-          # Default to skipped if empty
-          [ -z "$REQ_JSON" ] && REQ_JSON='{"status":"skipped","summary":"Review skipped"}'
-          [ -z "$UI_JSON" ] && UI_JSON='{"status":"skipped","summary":"Review skipped"}'
-          [ -z "$CQ_JSON" ] && CQ_JSON='{"status":"skipped","summary":"Review skipped"}'
-          [ -z "$CTX_JSON" ] && CTX_JSON='{"status":"skipped","summary":"Review skipped"}'
-
-          # Combine into single JSON
-          COMBINED=$(jq -n \
-            --argjson req "$REQ_JSON" \
-            --argjson ui "$UI_JSON" \
-            --argjson cq "$CQ_JSON" \
-            --argjson ctx "$CTX_JSON" \
-            '{
-              requirements: $req,
-              ui: $ui,
-              code_quality: $cq,
-              context: $ctx
-            }')
-
-          echo "review_results<<EOF" >> $GITHUB_OUTPUT
-          echo "$COMBINED" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Post consolidated comment
-        uses: ./.github/actions/consolidate-comment
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          review_results: ${{ steps.results.outputs.review_results }}
-
-  # =============================================================================
-  # Final Status Check
-  # =============================================================================
-  ci-complete:
-    name: CI Complete
-    needs: [basic-ci-complete, e2e-tests, requirements-review, ui-review, code-quality-review, context-review]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check final status
-        run: |
-          BASIC_CI="${{ needs.basic-ci-complete.result }}"
-          E2E="${{ needs.e2e-tests.result }}"
-          REQ="${{ needs.requirements-review.result }}"
-          UI="${{ needs.ui-review.result }}"
-          CQ="${{ needs.code-quality-review.result }}"
-          CTX="${{ needs.context-review.result }}"
-
-          echo "Basic CI: $BASIC_CI"
-          echo "E2E: $E2E"
-          echo "Requirements: $REQ"
-          echo "UI: $UI"
-          echo "Code Quality: $CQ"
-          echo "Context: $CTX"
-
-          # Fail if any required job failed
-          if [[ "$BASIC_CI" == "failure" ]]; then
-            echo "::error::Basic CI failed"
-            exit 1
-          fi
-
-          if [[ "$E2E" == "failure" ]]; then
-            echo "::error::E2E tests failed"
-            exit 1
-          fi
-
-          # Check reviews (failure means something went wrong, not just review failed)
-          if [[ "$REQ" == "failure" ]]; then
-            echo "::error::Requirements review job failed"
-            exit 1
-          fi
-
-          # UI, Code Quality, Context can fail if requirements didn't pass
-          # But if they ran and failed, that's an error
-          if [[ "$UI" == "failure" ]] && [[ "$REQ" != "failure" ]]; then
-            echo "::error::UI review failed"
-            exit 1
-          fi
-
-          if [[ "$CQ" == "failure" ]] && [[ "$REQ" != "failure" ]]; then
-            echo "::error::Code quality review failed"
-            exit 1
-          fi
-
-          if [[ "$CTX" == "failure" ]] && [[ "$REQ" != "failure" ]]; then
-            echo "::error::Context review failed"
-            exit 1
-          fi
-
-          echo "All CI checks completed successfully!"
+          has_app: 'false'  # Set to 'true' for repos with apps

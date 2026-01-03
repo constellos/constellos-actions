@@ -1,54 +1,26 @@
 # CI Configuration
-# Controls which CI workflows run in this repository
+# Template for Claude Code repos
 
 ci:
-  # Basic CI (always enabled)
-  basic:
-    enabled: true
+  # Set to true if this repo has an app (enables E2E + UI review)
+  has_app: false
+
+  # Static Analysis: Lint (ESLint) + Types (TypeScript)
+  static_analysis:
     lint: true
     typecheck: true
-    vitest: true
 
-  # E2E Testing
-  e2e:
-    enabled: true
-    framework: playwright
+  # Tests: Unit (Vitest) + E2E (Playwright)
+  # E2E only runs if has_app: true
+  tests:
+    unit: true
+    e2e: true
 
-  # Code Reviews (4 review types)
-  # Requirements Review must pass before others run
+  # Reviews: Requirements, Code Quality, Context, UI
+  # Requirements must pass before others run
+  # UI only runs if has_app: true and screenshots exist
   reviews:
-    enabled: true
-
-    # Requirements Review (GATE - must pass first)
-    # Checks code against linked issue requirements
     requirements: true
-
-    # UI Review (Playwright screenshots)
-    # Reviews visual design, accessibility, UX
-    ui: true
-
-    # Code Quality Review (NEW)
-    # Evaluates DRY, YAGNI, modularity, complexity, coupling, cohesion
     code_quality: true
-
-    # Context Review (combines 4 sub-reviews)
-    # Rules, Project Memory, Agents, Skills
-    context:
-      enabled: true
-      rules: true           # .claude/rules/*.md
-      project_memory: true  # CLAUDE.md files
-      agents: true          # .claude/agents/*.md
-      skills: true          # .claude/skills/**/SKILL.md
-
-  # Deployment CI (PR only)
-  deployment:
-    enabled: false
-
-    vercel:
-      enabled: false
-
-    supabase:
-      enabled: false
-
-    cloudflare:
-      enabled: false
+    context: true
+    ui: true
