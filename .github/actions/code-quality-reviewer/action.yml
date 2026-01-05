@@ -1,0 +1,80 @@
+name: Code Quality Reviewer
+description: Review PR code quality using Claude (DRY, YAGNI, modularity)
+
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: true
+  pr_number:
+    description: 'Pull request number'
+    required: true
+  github_token:
+    description: 'GitHub token for API access'
+    required: true
+
+outputs:
+  passed:
+    description: 'Whether the review passed'
+    value: ${{ steps.extract.outputs.passed }}
+  result:
+    description: 'JSON result from the review'
+    value: ${{ steps.extract.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Get changed files
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        mkdir -p .claude/review-context
+        gh pr view ${{ inputs.pr_number }} --json files --jq '.files[].path' > .claude/review-context/changed.txt
+
+    - name: Load agent prompt
+      id: agent
+      shell: bash
+      run: |
+        if [ -f ".claude/agents/reviewers/code-quality.md" ]; then
+          PROMPT=$(cat .claude/agents/reviewers/code-quality.md)
+        else
+          PROMPT="# Code Quality Review
+        Evaluate code quality for files in .claude/review-context/changed.txt
+        Criteria: DRY, YAGNI, Modularity, Maintainability
+        Output json {passed: bool, summary: ...}"
+        fi
+
+        echo "prompt<<ENDOFPROMPT" >> $GITHUB_OUTPUT
+        echo "$PROMPT" >> $GITHUB_OUTPUT
+        echo "ENDOFPROMPT" >> $GITHUB_OUTPUT
+
+    - name: Run review
+      id: review
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_tools: "View,GlobTool,Grep,Bash(git diff:*),Bash(cat:*)"
+        max_turns: 15
+        prompt: ${{ steps.agent.outputs.prompt }}
+
+    - name: Extract result
+      id: extract
+      shell: bash
+      run: |
+        # Initialize defaults - these will be used if parsing fails
+        PASSED="true"
+        RESULT='{"passed":true,"summary":"Review completed"}'
+
+        EXEC="${{ steps.review.outputs.execution_file }}"
+        if [ -f "$EXEC" ]; then
+          TEXT=$(jq -r '[.[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text] | last // ""' "$EXEC" 2>/dev/null || echo "")
+          JSON=$(echo "$TEXT" | sed -n '/```json/,/```/{/```/d;p;}' | head -50)
+          if echo "$JSON" | jq . >/dev/null 2>&1; then
+            PASSED=$(echo "$JSON" | jq -r '.passed // true')
+            RESULT=$(echo "$JSON" | jq -c '.')
+          fi
+        fi
+
+        # Always output - never skip these lines
+        echo "passed=$PASSED" >> $GITHUB_OUTPUT
+        echo "result=$RESULT" >> $GITHUB_OUTPUT

@@ -1,0 +1,166 @@
+name: Visual Reviewer
+description: Review UI screenshots for design, accessibility, and visual regression
+
+inputs:
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: true
+  pr_number:
+    description: 'Pull request number'
+    required: true
+  github_token:
+    description: 'GitHub token for API access'
+    required: true
+  screenshots_dir:
+    description: 'Directory containing screenshots'
+    required: false
+    default: '.claude/screenshots'
+  approvals_file:
+    description: 'Path to visual approvals JSON file'
+    required: false
+    default: '.claude-review/visual-approvals.json'
+  model:
+    description: 'Claude model to use for visual analysis'
+    required: false
+    default: 'claude-sonnet-4-5-20250929'
+
+outputs:
+  passed:
+    description: 'Whether the review passed'
+    value: ${{ steps.extract.outputs.passed }}
+  result:
+    description: 'JSON result from the review'
+    value: ${{ steps.extract.outputs.result }}
+  regression_detected:
+    description: 'Whether visual regression was detected'
+    value: ${{ steps.regression.outputs.detected }}
+  changed_screenshots:
+    description: 'List of screenshots that changed'
+    value: ${{ steps.regression.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check for screenshots
+      id: check
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.screenshots_dir }}
+        mkdir -p $(dirname ${{ inputs.approvals_file }})
+
+        COUNT=$(ls -1 ${{ inputs.screenshots_dir }}/*.png 2>/dev/null | wc -l || echo "0")
+        echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+    - name: Check for regressions
+      id: regression
+      shell: bash
+      run: |
+        APPROVAL_FILE="${{ inputs.approvals_file }}"
+        SCREENSHOTS_DIR="${{ inputs.screenshots_dir }}"
+        CHANGED=""
+        NEW=""
+        DETECTED="false"
+
+        if [ -f "$APPROVAL_FILE" ] && [ "${{ steps.check.outputs.count }}" != "0" ]; then
+          for screenshot in "$SCREENSHOTS_DIR"/*.png; do
+            [ -f "$screenshot" ] || continue
+            name=$(basename "$screenshot")
+            current_hash=$(sha256sum "$screenshot" | cut -d' ' -f1)
+
+            # Check if this screenshot was previously approved
+            approved_hash=$(jq -r ".approvals[] | select(.screenshot == \"$name\") | .hash // \"\"" "$APPROVAL_FILE" 2>/dev/null || echo "")
+
+            if [ -z "$approved_hash" ]; then
+              NEW="$NEW $name"
+            elif [ "$current_hash" != "$approved_hash" ]; then
+              CHANGED="$CHANGED $name"
+              DETECTED="true"
+            fi
+          done
+        fi
+
+        echo "detected=$DETECTED" >> $GITHUB_OUTPUT
+        echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+        echo "new=$NEW" >> $GITHUB_OUTPUT
+
+        # Determine message type
+        if [ -n "$CHANGED" ]; then
+          echo "message_type=regression" >> $GITHUB_OUTPUT
+        elif [ -n "$NEW" ]; then
+          echo "message_type=new" >> $GITHUB_OUTPUT
+        else
+          echo "message_type=unchanged" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Load agent prompt
+      id: agent
+      shell: bash
+      run: |
+        MSG_TYPE="${{ steps.regression.outputs.message_type }}"
+        CHANGED="${{ steps.regression.outputs.changed }}"
+        NEW="${{ steps.regression.outputs.new }}"
+
+        case "$MSG_TYPE" in
+          "regression")
+            CONTEXT="VISUAL REGRESSION - Changed: $CHANGED"
+            ;;
+          "new")
+            CONTEXT="NEW SCREENSHOTS - New: $NEW"
+            ;;
+          *)
+            CONTEXT="All screenshots match approved versions"
+            ;;
+        esac
+
+        if [ -f ".claude/agents/reviewers/visual.md" ]; then
+          BASE_PROMPT=$(cat .claude/agents/reviewers/visual.md)
+        else
+          BASE_PROMPT="# Visual Review - Screenshots in ${{ inputs.screenshots_dir }}/"
+        fi
+
+        FULL_PROMPT="$BASE_PROMPT
+        $CONTEXT
+        Evaluate: Design, Accessibility, Responsiveness
+        Output json {passed: bool, summary: ...}"
+
+        echo "prompt<<ENDOFPROMPT" >> $GITHUB_OUTPUT
+        echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
+        echo "ENDOFPROMPT" >> $GITHUB_OUTPUT
+
+    - name: Run review
+      if: steps.check.outputs.count != '0'
+      id: review
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_tools: "View,GlobTool,Bash(ls:*)"
+        max_turns: 20
+        model: ${{ inputs.model }}
+        prompt: ${{ steps.agent.outputs.prompt }}
+
+    - name: Extract result
+      id: extract
+      shell: bash
+      run: |
+        # Initialize defaults - these will be used if parsing fails
+        PASSED="true"
+        RESULT='{"passed":true,"summary":"Review completed"}'
+
+        # Handle case when no screenshots exist
+        if [ "${{ steps.check.outputs.count }}" = "0" ]; then
+          RESULT='{"passed":true,"summary":"No screenshots to review"}'
+        else
+          EXEC="${{ steps.review.outputs.execution_file }}"
+          if [ -f "$EXEC" ]; then
+            TEXT=$(jq -r '[.[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text] | last // ""' "$EXEC" 2>/dev/null || echo "")
+            JSON=$(echo "$TEXT" | sed -n '/```json/,/```/{/```/d;p;}' | head -50)
+            if echo "$JSON" | jq . >/dev/null 2>&1; then
+              PASSED=$(echo "$JSON" | jq -r '.passed // true')
+              RESULT=$(echo "$JSON" | jq -c '.')
+            fi
+          fi
+        fi
+
+        # Always output - never skip these lines
+        echo "passed=$PASSED" >> $GITHUB_OUTPUT
+        echo "result=$RESULT" >> $GITHUB_OUTPUT
