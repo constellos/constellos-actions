@@ -79,10 +79,13 @@ runs:
           SKIP_REASON="No changed files found or unable to access PR data"
         fi
 
-        # Check if issue context file exists
+        # Check if issue context has actual content (not just {})
         if [ ! -f ".claude/review-context/issue.json" ]; then
           SKIP="true"
           SKIP_REASON="Could not access context files"
+        elif [ "$(cat .claude/review-context/issue.json)" = "{}" ]; then
+          SKIP="true"
+          SKIP_REASON="No issue linked to this branch - skipping requirements review"
         fi
 
         echo "skip=$SKIP" >> $GITHUB_OUTPUT
@@ -134,10 +137,15 @@ runs:
           echo "checks_passed=0" >> $GITHUB_OUTPUT
           echo "checks_failed=0" >> $GITHUB_OUTPUT
           echo "checks_skipped=3" >> $GITHUB_OUTPUT
-          RESULT=$(cat <<EOF
-        {"checks":[{"name":"Completeness","status":"skipped","result":"$REASON","reasoning":"$REASON","files":[]},{"name":"Scope","status":"skipped","result":"$REASON","reasoning":"$REASON","files":[]},{"name":"Traceability","status":"skipped","result":"$REASON","reasoning":"$REASON","files":[]}],"message":"$REASON"}
-        EOF
-        )
+          # Build JSON with proper escaping using jq
+          RESULT=$(jq -n --arg reason "$REASON" '{
+            checks: [
+              {name: "Completeness", status: "skipped", result: $reason, reasoning: $reason, files: []},
+              {name: "Scope", status: "skipped", result: $reason, reasoning: $reason, files: []},
+              {name: "Traceability", status: "skipped", result: $reason, reasoning: $reason, files: []}
+            ],
+            message: $reason
+          }')
           echo "result=$(echo "$RESULT" | jq -c '.')" >> $GITHUB_OUTPUT
           exit 0
         fi
