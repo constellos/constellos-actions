@@ -71,7 +71,7 @@ runs:
         fi
         if [ "$CHECKS_SKIPPED" -gt 0 ]; then
           [ -n "$SUMMARY_PARTS" ] && SUMMARY_PARTS="$SUMMARY_PARTS / "
-          SUMMARY_PARTS="${SUMMARY_PARTS}⏭️ $CHECKS_SKIPPED Skipped"
+          SUMMARY_PARTS="${SUMMARY_PARTS}⚠️ $CHECKS_SKIPPED Skipped"
         fi
 
         # Build prompt link
@@ -97,7 +97,7 @@ runs:
           case "$CHECK_STATUS" in
             "passed") CHECK_EMOJI="✅" ;;
             "failed") CHECK_EMOJI="❌" ;;
-            *) CHECK_EMOJI="⏭️" ;;
+            *) CHECK_EMOJI="⚠️" ;;
           esac
 
           # Get files for this check
